@@ -27,7 +27,7 @@ class CommandHandler(
     private val quit: () -> Unit
 ) {
     private val main = Handler(Looper.getMainLooper())
-    private val timers = mutableListOf<Runnable>()
+    private val timers = java.util.concurrent.CopyOnWriteArrayList<Runnable>()
     private var torchOn = false
 
     private val jokes = listOf(
@@ -67,9 +67,7 @@ class CommandHandler(
             return "Today is " + SimpleDateFormat("EEEE, d MMMM yyyy", Locale.getDefault()).format(Date()) + "."
         }
         if (t.contains("battery")) {
-            val bm = ctx.getSystemService(BatteryManager::class.java)
-            val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-            return "Battery is at $pct percent."
+            return batteryText()
         }
 
         if (t.contains("joke")) return jokes.random()
@@ -86,24 +84,24 @@ class CommandHandler(
         val ytPlay = Regex("(?:play|youtube)\\s+(.+)").find(t)
         if (ytPlay != null && t != "open youtube") {
             val q = ytPlay.groupValues[1].replace(" on youtube", "").trim()
-            return launch("https://www.youtube.com/results?search_query=" + enc(q), "YouTube search for $q")
+            return spokenLaunch("https://www.youtube.com/results?search_query=" + enc(q), "YouTube search for $q")
         }
-        if (t.contains("open youtube")) return launch("https://www.youtube.com", "YouTube")
-        if (t.contains("open whatsapp")) return launch("https://wa.me/", "WhatsApp")
-        if (Regex("open (gmail|mail)").containsMatchIn(t)) return launch("https://mail.google.com", "Gmail")
-        if (t.contains("open maps")) return launch("https://maps.google.com", "Maps")
-        if (t.contains("news")) return launch("https://news.google.com", "the news")
+        if (t.contains("open youtube")) return spokenLaunch("https://www.youtube.com", "YouTube")
+        if (t.contains("open whatsapp")) return spokenLaunch("https://wa.me/", "WhatsApp")
+        if (Regex("open (gmail|mail)").containsMatchIn(t)) return spokenLaunch("https://mail.google.com", "Gmail")
+        if (t.contains("open maps")) return spokenLaunch("https://maps.google.com", "Maps")
+        if (t.contains("news")) return spokenLaunch("https://news.google.com", "the news")
         if (t.contains("weather")) {
-            return launch("https://www.google.com/search?q=" + enc(t), "the weather")
+            return spokenLaunch("https://www.google.com/search?q=" + enc(t), "the weather")
         }
 
         val search = Regex("(?:search|google|look up|find)\\s+(?:for\\s+)?(.+)").find(t)
         if (search != null) {
             val q = search.groupValues[1]
-            return launch("https://www.google.com/search?q=" + enc(q), "a Google search for $q")
+            return spokenLaunch("https://www.google.com/search?q=" + enc(q), "a Google search for $q")
         }
         if (Regex("^(what|who|when|where|why|how|which)\\b").containsMatchIn(t)) {
-            return launch("https://www.google.com/search?q=" + enc(t), "a Google search")
+            return spokenLaunch("https://www.google.com/search?q=" + enc(t), "a Google search")
         }
 
         return "I did not understand that. Try: what time is it, battery level, torch on, set a timer for 5 minutes, or play songs on YouTube."
@@ -111,7 +109,7 @@ class CommandHandler(
 
     // ---------- Actions ----------
 
-    private fun setTorch(on: Boolean): String {
+    fun setTorch(on: Boolean): String {
         return try {
             val cm = ctx.getSystemService(CameraManager::class.java)
             val id = cm.cameraIdList.firstOrNull {
@@ -125,7 +123,7 @@ class CommandHandler(
         }
     }
 
-    private fun changeVolume(t: String): String {
+    fun changeVolume(t: String): String {
         val am = ctx.getSystemService(AudioManager::class.java)
         val stream = AudioManager.STREAM_MUSIC
         return when {
@@ -150,28 +148,68 @@ class CommandHandler(
             ?: return "Tell me how long, for example: set a timer for 5 minutes."
         val n = m.groupValues[1].toLong()
         val unit = m.groupValues[2]
-        val ms = n * when {
-            unit.startsWith("sec") -> 1000L
-            unit.startsWith("min") -> 60_000L
-            else -> 3_600_000L
+        val secs = n * when {
+            unit.startsWith("sec") -> 1L
+            unit.startsWith("min") -> 60L
+            else -> 3600L
         }
-        val label = "$n " + when {
-            unit.startsWith("sec") -> "seconds"
-            unit.startsWith("min") -> "minutes"
-            else -> "hours"
-        }
-        val r = Runnable { say("Your $label timer is finished.") }
+        return startTimer(secs, "")
+    }
+
+    /** Starts a countdown that speaks when it ends. Used by the offline commands and by the AI. */
+    fun startTimer(seconds: Long, what: String): String {
+        val label = describeDuration(seconds)
+        val suffix = if (what.isBlank()) "" else " for $what"
+        val r = Runnable { say("Your $label timer$suffix is finished.") }
         timers.add(r)
-        main.postDelayed(r, ms)
-        return "Timer set for $label."
+        main.postDelayed(r, seconds * 1000L)
+        return "Timer set for $label$suffix."
+    }
+
+    private fun describeDuration(s: Long): String = when {
+        s % 3600L == 0L -> "${s / 3600L} " + if (s == 3600L) "hour" else "hours"
+        s % 60L == 0L -> "${s / 60L} " + if (s == 60L) "minute" else "minutes"
+        s > 60L -> "${s / 60L} minutes ${s % 60L} seconds"
+        else -> "$s seconds"
+    }
+
+    fun batteryText(): String {
+        val bm = ctx.getSystemService(BatteryManager::class.java)
+        return "Battery is at ${bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)} percent."
+    }
+
+    fun sendWhatsapp(number: String, message: String): String {
+        val digits = number.filter { it.isDigit() }
+        if (digits.isEmpty()) return "I need a phone number with country code."
+        return launch("https://wa.me/$digits?text=" + enc(message), "WhatsApp")
+    }
+
+    /** Prepares an alarm. Android only lets a background service open it through a notification tap. */
+    fun setAlarm(hour: Int, minute: Int, label: String): String {
+        if (hour !in 0..23 || minute !in 0..59) return "That time is not valid."
+        val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
+            .putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
+            .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
+            .putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, label)
+            .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+        val shown = SimpleDateFormat("h:mm a", Locale.getDefault()).format(
+            java.util.Calendar.getInstance().apply {
+                set(java.util.Calendar.HOUR_OF_DAY, hour)
+                set(java.util.Calendar.MINUTE, minute)
+            }.time
+        )
+        return launchIntent(intent, "the $shown alarm")
     }
 
     /**
      * Android blocks background services from opening apps directly. So we post a
      * high-priority notification: tap it (or it pops up on the lock screen) to open the link.
      */
-    private fun launch(url: String, label: String): String {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    fun launch(url: String, label: String): String =
+        launchIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)), label)
+
+    fun launchIntent(intent: Intent, label: String): String {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val pi = PendingIntent.getActivity(
             ctx, 100, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
@@ -185,6 +223,12 @@ class CommandHandler(
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
         ctx.getSystemService(NotificationManager::class.java).notify(Config.NOTIF_ACTION, n)
+        return "Notification posted. The user must tap it to open $label."
+    }
+
+    /** Offline path: same as launch() but with a sentence meant to be read out. */
+    private fun spokenLaunch(url: String, label: String): String {
+        launch(url, label)
         return "Opening $label. Tap the notification if it does not open."
     }
 

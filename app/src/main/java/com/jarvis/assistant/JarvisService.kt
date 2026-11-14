@@ -58,6 +58,8 @@ class JarvisService : Service() {
     private val pending = HashMap<String, () -> Unit>()
 
     private lateinit var commands: CommandHandler
+    private lateinit var agent: GeminiAgent
+    private var followUps = 0
 
     // Words the speech model may produce when you say "Jarvis".
     private val wakePattern = Regex("(jarvis|jar vis|jarvas|jervis|jarbis|jarvice)")
@@ -74,6 +76,7 @@ class JarvisService : Service() {
             say = { msg -> main.post { speak(msg, null) } },
             quit = { main.post { stopSelf() } }
         )
+        agent = GeminiAgent(this, commands)
         initTts()
     }
 
@@ -215,6 +218,7 @@ class JarvisService : Service() {
     private fun onWake() {
         if (busy) return
         busy = true
+        followUps = 0
         main.post {
             stopWakeListening()
             updateNotification("Listening...")
@@ -246,7 +250,7 @@ class JarvisService : Service() {
                 if (text.isNullOrBlank()) {
                     finishTurn("I did not catch that.")
                 } else {
-                    finishTurn(commands.handle(text))
+                    think(text)
                 }
             }
 
@@ -288,12 +292,53 @@ class JarvisService : Service() {
         return true
     }
 
-    private fun finishTurn(reply: String) {
+    /**
+     * Sends the command to the Gemini agent (background thread). If there is no key, or no internet,
+     * the old offline command list answers instead.
+     */
+    private fun think(text: String) {
+        if (!agent.isConfigured()) {
+            finishTurn(commands.handle(text))
+            return
+        }
+        updateNotification("Thinking...")
+        Thread {
+            var reply: String? = null
+            var offline = false
+            try {
+                reply = agent.ask(text)
+            } catch (e: GeminiAgent.AgentException) {
+                if (e.offline) offline = true else reply = e.spoken
+            } catch (e: Exception) {
+                Log.e(tag, "Agent error", e)
+                reply = "Something went wrong."
+            }
+            main.post {
+                if (!Config.running) return@post
+                when {
+                    offline -> finishTurn(commands.handle(text))
+                    else -> finishTurn(reply ?: "", followUp = true)
+                }
+            }
+        }.start()
+    }
+
+    /** followUp: if the reply is a question, listen again right away without needing the wake word. */
+    private fun finishTurn(reply: String, followUp: Boolean = false) {
         if (reply.isBlank()) {
             resumeWakeWord()
         } else {
             updateNotification("Speaking...")
-            speak(reply) { resumeWakeWord() }
+            val again = followUp && reply.trimEnd().endsWith("?") && followUps < 2
+            speak(reply) {
+                if (again && Config.running) {
+                    followUps++
+                    updateNotification("Listening...")
+                    listen()
+                } else {
+                    resumeWakeWord()
+                }
+            }
         }
     }
 

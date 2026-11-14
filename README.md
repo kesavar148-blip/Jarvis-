@@ -1,4 +1,4 @@
-# JARVIS for Android (wake word, works with the screen off)
+# JARVIS for Android (AI agent, wake word, works with the screen off)
 
 An Android app with a **foreground service** that listens for "Jarvis" or "Hey Jarvis" using
 **Vosk** (free, offline, **no account, no key, no company email**). Then it hears one command, answers
@@ -12,6 +12,31 @@ out loud, and goes back to listening. Made for a Vivo T4 5G (Android 15, Funtouc
   than a dedicated engine.
 
 ---
+
+## NEW: the AI brain (Gemini, free tier)
+Jarvis can now understand free speech, answer questions, chat, and choose phone actions by itself.
+It uses Google's Gemini API. Your spoken command is sent to Google as text, so it needs internet.
+
+1. Get a free key: open https://aistudio.google.com/apikey, sign in with a Google account, tap **Create API key**.
+2. Open the Jarvis app, paste the key in the **Gemini API key** box, tap **Save key**.
+3. The model box already holds `gemini-3.1-flash-lite`, the model Google lists as free. If Google renames it, type the
+   new free model name there.
+4. Tap **Start Jarvis**. Say "Hey Jarvis", then anything, for example:
+   - "Wake me up at 6 30 tomorrow", "remind me in 20 minutes to drink water"
+   - "Navigate to Tirupati railway station", "play Telugu kids songs on YouTube"
+   - "Send a WhatsApp to 91XXXXXXXXXX saying I will be late"
+   - "Explain why the sky is blue", "tell me a story about a clever crow"
+5. If Jarvis asks you a question, just answer. It listens again without the wake word.
+
+Tools Gemini can use: flashlight, volume, timer, battery, alarm, web search, YouTube, Maps directions, dialer,
+WhatsApp message, open a link. Actions that open another app still show a notification you tap (Android rule).
+Calls and WhatsApp messages are only prepared; you press call or send.
+
+With no key, or with no internet, Jarvis falls back to the old fixed offline commands.
+
+Limits of the free tier: Google may slow or stop requests when you talk a lot ("I have used up the free Gemini limit").
+Free-tier data may be used by Google to improve its products, so do not say private things to it.
+Live facts (weather, news) are not known by the model, so it opens a Google search instead.
 
 ## Fastest way: get a ready-to-install APK with no Android Studio
 GitHub builds the APK for you, free, in about 5 to 8 minutes. You can do this from a computer
@@ -69,7 +94,8 @@ Menu names change between Funtouch OS versions. Look for the closest match.
 | File | Job |
 |---|---|
 | `JarvisService.kt` | Foreground service of type microphone. Runs Vosk for the wake word, then Android's speech recognizer for one command, then text-to-speech, one at a time. Holds a partial wake lock so the CPU keeps running with the screen off. |
-| `CommandHandler.kt` | Maps what you said to an action and a reply. Add your own commands here. |
+| `GeminiAgent.kt` | The AI brain. Sends your words to Gemini with a list of phone tools, runs the tools Gemini picks, returns one short sentence to speak. |
+| `CommandHandler.kt` | The phone actions (torch, volume, timer, alarm, links) plus the old offline command list. Add your own tools here and in `GeminiAgent.kt`. |
 | `MainActivity.kt` | Screen to start or stop, and open battery settings. |
 | `AndroidManifest.xml` | Permissions and the `microphone` foreground service type. |
 
@@ -82,7 +108,7 @@ Menu names change between Funtouch OS versions. Look for the closest match.
 - **Microphone use:** Android shows the green microphone dot while Jarvis listens. If a call, voice recorder or another
   app takes the microphone, Jarvis pauses.
 - **Battery:** this listens continuously with a speech model. Expect a clear battery drain.
-- **Not smart:** replies come from a fixed command list. It is not a chat AI.
+- **Smart only with a Gemini key and internet.** Without them it uses the fixed command list.
 - **Vivo may still stop it.** If it dies after some time, repeat the Vivo settings.
 
 ## Troubleshooting
