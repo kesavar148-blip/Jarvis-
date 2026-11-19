@@ -35,3 +35,22 @@ jobs:
         with:
           name: jarvis-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+  # Runs the time-parser checks on their own, so a failing check is visible
+  # without blocking the APK above.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest --no-daemon

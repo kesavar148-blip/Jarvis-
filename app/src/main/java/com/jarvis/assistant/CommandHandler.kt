@@ -27,7 +27,6 @@ class CommandHandler(
     private val quit: () -> Unit
 ) {
     private val main = Handler(Looper.getMainLooper())
-    private val timers = java.util.concurrent.CopyOnWriteArrayList<Runnable>()
     private var torchOn = false
 
     private val jokes = listOf(
@@ -60,6 +59,10 @@ class CommandHandler(
             return "Goodbye. Shutting down."
         }
 
+        // Alarms, reminders, timers and tasks. Must come before the time and date answers below,
+        // because "remind me today at 5" contains the word "today".
+        scheduleCommand(t)?.let { return it }
+
         if (Regex("\\btime\\b").containsMatchIn(t)) {
             return "It is " + SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date()) + "."
         }
@@ -78,8 +81,6 @@ class CommandHandler(
             return setTorch(on)
         }
         if (t.contains("volume") || t.contains("louder") || t.contains("quieter")) return changeVolume(t)
-
-        if (t.contains("timer") || t.contains("remind me")) return setTimer(t)
 
         val ytPlay = Regex("(?:play|youtube)\\s+(.+)").find(t)
         if (ytPlay != null && t != "open youtube") {
@@ -143,6 +144,72 @@ class CommandHandler(
         }
     }
 
+    /**
+     * Offline handling of alarms, reminders, timers and tasks. Returns null when the sentence is about something else.
+     * Everything here is saved on the phone and scheduled with Android's AlarmManager, so it still
+     * rings when Jarvis is not running and the screen is off.
+     */
+    private fun scheduleCommand(t: String): String? {
+        // --- to-do list ---
+        Regex("^(?:add|create|make|new) (?:a |an )?(?:task|to-?do|todo)(?: to| for| called)?\\s*(.*)$").find(t)?.let {
+            return Reminders.addTask(ctx, it.groupValues[1])
+        }
+        Regex("^add (.+) to (?:my )?(?:tasks|to-?do list|todo list|to do list)$").find(t)?.let {
+            return Reminders.addTask(ctx, it.groupValues[1])
+        }
+        if (Regex("\\btask\\b").containsMatchIn(t) && Regex("^(complete|finish|mark|done|tick)").containsMatchIn(t)) {
+            return Reminders.completeTask(ctx, t)
+        }
+        if (Regex("\\b(pending|remaining|open|my) (tasks|to-?dos?)\\b|\\bto-?do list\\b|\\bwhat tasks\\b").containsMatchIn(t)) {
+            return Reminders.spokenTasks(ctx)
+        }
+
+        // --- list or cancel ---
+        if (Regex("\\b(what|which|list|show|tell)\\b.*\\b(alarms?|reminders?)\\b|what do i have scheduled").containsMatchIn(t)) {
+            return Reminders.spokenList(ctx)
+        }
+        val cancel = Regex("^(?:cancel|delete|remove|clear|turn off)\\b.*\\b(alarm|alarms|reminder|reminders|timer|timers)\\b").find(t)
+        if (cancel != null) {
+            if (Regex("\\ball\\b").containsMatchIn(t)) {
+                return "To be safe I cancel one at a time. Tell me which one, for example: cancel the 8 AM alarm."
+            }
+            val kind = when {
+                cancel.groupValues[1].startsWith("alarm") -> Kind.ALARM
+                cancel.groupValues[1].startsWith("timer") -> Kind.TIMER
+                else -> Kind.REMINDER
+            }
+            return Reminders.cancelMatching(ctx, t, kind)
+        }
+
+        // --- timer ---
+        if (Regex("\\btimer\\b").containsMatchIn(t)) return setTimer(t)
+
+        // --- alarm, wake-up, reminder ---
+        if (Regex("\\b(wake me|wake up call|set (an |a |the |my )?(alarm|reminder)|remind me|call me|alarm for|reminder for|alert me)\\b")
+                .containsMatchIn(t)
+        ) {
+            val r = TimeParser.parse(t)
+            if (!r.ok) return r.error
+            val out = Reminders.create(ctx, r.title, r.kind, r.whenMs, r.repeat)
+            var say = out.spoken
+            if (out.reminder != null) {
+                if (r.callRequest) {
+                    say += " I cannot place a real phone call yet, so it will ring as an alarm on this phone."
+                }
+                if (r.guessedAmPm) say += " You did not say AM or PM, so I chose. Tell me if that is wrong."
+            }
+            return say
+        }
+        return null
+    }
+
+    private fun timerName(s: Long): String = when {
+        s % 3600L == 0L -> "${s / 3600L} hour timer"
+        s % 60L == 0L -> "${s / 60L} minute timer"
+        s > 60L -> "${s / 60L} minute ${s % 60L} second timer"
+        else -> "$s second timer"
+    }
+
     private fun setTimer(t: String): String {
         val m = Regex("(\\d+)\\s*(second|sec|minute|min|hour)").find(t)
             ?: return "Tell me how long, for example: set a timer for 5 minutes."
@@ -156,14 +223,18 @@ class CommandHandler(
         return startTimer(secs, "")
     }
 
-    /** Starts a countdown that speaks when it ends. Used by the offline commands and by the AI. */
+    /**
+     * Starts a countdown that rings when it ends. It is saved and scheduled with Android's AlarmManager,
+     * so it still rings if Jarvis is stopped or the screen is off. Used by the offline commands and by the AI.
+     */
     fun startTimer(seconds: Long, what: String): String {
-        val label = describeDuration(seconds)
+        val secs = seconds.coerceAtLeast(2L)
+        val label = describeDuration(secs)
         val suffix = if (what.isBlank()) "" else " for $what"
-        val r = Runnable { say("Your $label timer$suffix is finished.") }
-        timers.add(r)
-        main.postDelayed(r, seconds * 1000L)
-        return "Timer set for $label$suffix."
+        val out = Reminders.create(
+            ctx, timerName(secs) + suffix, Kind.TIMER, System.currentTimeMillis() + secs * 1000L, Repeat.NONE
+        )
+        return if (out.reminder == null) out.spoken else "Timer set for $label$suffix."
     }
 
     private fun describeDuration(s: Long): String = when {
@@ -182,23 +253,6 @@ class CommandHandler(
         val digits = number.filter { it.isDigit() }
         if (digits.isEmpty()) return "I need a phone number with country code."
         return launch("https://wa.me/$digits?text=" + enc(message), "WhatsApp")
-    }
-
-    /** Prepares an alarm. Android only lets a background service open it through a notification tap. */
-    fun setAlarm(hour: Int, minute: Int, label: String): String {
-        if (hour !in 0..23 || minute !in 0..59) return "That time is not valid."
-        val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM)
-            .putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
-            .putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
-            .putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, label)
-            .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
-        val shown = SimpleDateFormat("h:mm a", Locale.getDefault()).format(
-            java.util.Calendar.getInstance().apply {
-                set(java.util.Calendar.HOUR_OF_DAY, hour)
-                set(java.util.Calendar.MINUTE, minute)
-            }.time
-        )
-        return launchIntent(intent, "the $shown alarm")
     }
 
     /**
@@ -232,9 +286,9 @@ class CommandHandler(
         return "Opening $label. Tap the notification if it does not open."
     }
 
+    /** Timers now live in Android's AlarmManager, so there is nothing to clean up here. */
     fun release() {
-        timers.forEach { main.removeCallbacks(it) }
-        timers.clear()
+        main.removeCallbacksAndMessages(null)
     }
 
     // ---------- Helpers ----------

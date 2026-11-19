@@ -126,8 +126,34 @@ class GeminiAgent(
         )
         "call_number" -> tools.launch("tel:" + a.optString("number", "").filter { it.isDigit() || it == '+' }, "the dialer")
         "send_whatsapp" -> tools.sendWhatsapp(a.optString("number", ""), a.optString("message", ""))
-        "set_alarm" -> tools.setAlarm(a.optInt("hour", 0), a.optInt("minute", 0), a.optString("label", ""))
+        "schedule_reminder" -> scheduleReminder(a)
+        "list_reminders" -> Reminders.spokenList(ctx)
+        "cancel_reminder" -> Reminders.cancelMatching(ctx, a.optString("text", ""), kindOf(a.optString("kind", "")))
+        "add_task" -> Reminders.addTask(ctx, a.optString("title", ""))
+        "list_tasks" -> Reminders.spokenTasks(ctx)
+        "complete_task" -> Reminders.completeTask(ctx, a.optString("text", ""))
         else -> "Unknown tool $name"
+    }
+
+    private fun kindOf(s: String): Kind? = when (s.lowercase(Locale.ROOT)) {
+        "alarm" -> Kind.ALARM
+        "reminder" -> Kind.REMINDER
+        "timer" -> Kind.TIMER
+        else -> null
+    }
+
+    /** Saves an alarm or reminder and hands it to Android's AlarmManager. Returns the sentence confirming it. */
+    private fun scheduleReminder(a: JSONObject): String {
+        val at = Reminders.parseLocal(a.optString("datetime", ""))
+            ?: return "Error: datetime must look like 2026-11-18T08:00 (local time, no time zone)."
+        val kind = if (a.optString("kind", "reminder").equals("alarm", ignoreCase = true)) Kind.ALARM else Kind.REMINDER
+        val repeat = when (a.optString("repeat", "none").lowercase(Locale.ROOT)) {
+            "daily" -> Repeat.DAILY
+            "weekdays" -> Repeat.WEEKDAYS
+            "weekly" -> Repeat.WEEKLY
+            else -> Repeat.NONE
+        }
+        return Reminders.create(ctx, a.optString("title", ""), kind, Schedule.firstOccurrence(at, repeat), repeat).spoken
     }
 
     private fun toolDeclarations(): JSONArray {
@@ -173,21 +199,47 @@ class GeminiAgent(
         decls.put(fn("send_whatsapp", "Open WhatsApp with a message ready for a phone number. The user presses send.",
             JSONObject().put("number", str("Phone number with country code, digits only"))
                 .put("message", str("Message text")), listOf("number", "message")))
-        decls.put(fn("set_alarm", "Set a clock alarm at a time of day (24-hour).",
-            JSONObject().put("hour", int("Hour 0 to 23")).put("minute", int("Minute 0 to 59"))
-                .put("label", str("Alarm label, may be empty")), listOf("hour", "minute")))
+        decls.put(fn("schedule_reminder",
+            "Schedule an alarm or a reminder at a date and time. It is saved on the phone and rings even with the screen off. " +
+                "Use for 'wake me up', 'set an alarm', 'remind me to ...', and 'call me' (that is only an alarm, not a phone call).",
+            JSONObject()
+                .put("title", str("What to be reminded of. Empty for a plain wake-up alarm."))
+                .put("datetime", str("Local date and time exactly like 2026-11-18T08:00, no time zone"))
+                .put("kind", str("alarm for wake-ups and alarms, reminder for things to remember"))
+                .put("repeat", str("none, daily, weekdays or weekly")),
+            listOf("datetime", "kind")))
+        decls.put(fn("list_reminders", "List the alarms and reminders that are scheduled."))
+        decls.put(fn("cancel_reminder",
+            "Cancel ONE alarm or reminder, described by its title or time. If several match, it says so: then ask the user which one.",
+            JSONObject()
+                .put("text", str("Title words or the time, for example 8 AM or study"))
+                .put("kind", str("alarm, reminder or timer. May be empty.")),
+            listOf("text")))
+        decls.put(fn("add_task", "Add an item to the user's to-do list.",
+            JSONObject().put("title", str("The task")), listOf("title")))
+        decls.put(fn("list_tasks", "List the pending items on the to-do list."))
+        decls.put(fn("complete_task", "Mark a to-do item as done.",
+            JSONObject().put("text", str("Words from the task")), listOf("text")))
         return JSONArray().put(JSONObject().put("functionDeclarations", decls))
     }
 
     private fun systemPrompt(): String {
-        val now = SimpleDateFormat("EEEE, d MMMM yyyy, h:mm a", Locale.getDefault()).format(Date())
-        return "You are Jarvis, a friendly voice assistant running on the user's Android phone. " +
+        val date = Date()
+        val now = SimpleDateFormat("EEEE, d MMMM yyyy, h:mm a", Locale.getDefault()).format(date)
+        val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US).format(date)
+        return "You are Jarvis, a calm, polite and quietly witty voice assistant in the style of the Iron Man JARVIS, " +
+            "running on the user's Android phone. You may address the user as sir. " +
             "Everything you write is spoken aloud, so: answer in one or two short sentences, plain words, " +
             "no markdown, no lists, no emojis. Only tell a longer story or explanation if asked. " +
             "Use the tools to control the phone when the user wants an action; do not say you did " +
             "something unless a tool confirmed it. For live facts you cannot know (weather, news, prices, scores) " +
             "use search_web. If a request is unclear, ask one short question. " +
-            "Reply in the language the user spoke. Current local time: $now."
+            "Alarms and reminders: always call schedule_reminder with the exact local datetime worked out from the " +
+            "current time (never set_timer for a clock time). If AM or PM is unclear, ask one short question first. " +
+            "For a reminder with no time, ask when. After the tool answers, repeat its confirmation in your own words. " +
+            "You cannot place real phone calls to the user: if asked to call them, schedule an alarm and say plainly " +
+            "that it is an alarm, not a call. " +
+            "Reply in the language the user spoke. Current local time: $now (ISO $iso)."
     }
 
     // ---------- HTTP ----------

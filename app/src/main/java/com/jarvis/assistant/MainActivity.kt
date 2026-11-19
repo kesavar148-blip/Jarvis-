@@ -42,6 +42,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
+        // Opening the app puts every saved alarm back into Android's AlarmManager. This matters after
+        // "Force stop", which makes Android forget all of an app's alarms.
+        try {
+            AlarmScheduler.restoreAll(this, false)
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Could not restore alarms", e)
+        }
     }
 
     override fun onResume() {
@@ -179,6 +186,9 @@ class MainActivity : ComponentActivity() {
 
         root.addView(button("Start Jarvis") { onStartClicked() })
         root.addView(button("Stop Jarvis") { onStopClicked() })
+        root.addView(button("Reminders and alarms") {
+            startActivity(Intent(this, RemindersActivity::class.java))
+        })
         root.addView(button("Allow background battery use") { onBatteryClicked() })
         root.addView(button("Open app settings (Vivo battery and autostart)") { onAppSettingsClicked() })
 

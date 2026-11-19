@@ -37,4 +37,7 @@ dependencies {
 
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-ktx:1.9.2")
+
+    // Unit tests for the time parser: gradle :app:testDebugUnitTest
+    testImplementation("junit:junit:4.13.2")
 }

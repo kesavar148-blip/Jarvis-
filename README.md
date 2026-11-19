@@ -5,11 +5,53 @@ An Android app with a **foreground service** that listens for "Jarvis" or "Hey J
 out loud, and goes back to listening. Made for a Vivo T4 5G (Android 15, Funtouch OS).
 
 **Be aware before you start**
-- I could not compile or run this here (no Android build tools in my workspace). It is a first version and
-  untested. If the build shows a red error, send me the exact text and I will fix it.
+- **What has and has not been tested.** The alarm time parser (understanding "tomorrow at 8 AM", "every weekday",
+  "in 30 minutes" ...) has 28 automated checks, and all pass (run in three time zones). Everything that touches Android
+  (ringing, the lock-screen screen, voice, the wake word, the AI) has **never run on a phone**: my workspace has no
+  Android SDK and no device. Expect some bugs. If the build shows a red error, or something misbehaves, send me the
+  exact text or what you saw, and I will fix it.
 - The wake word is found by a small speech model, not a trained wake-word engine. It reacts to the word
   **"Jarvis"** (so "Hey Jarvis" works too). It can miss you or react to similar sounds, and it uses more battery
   than a dedicated engine.
+
+---
+
+## NEW: alarms, wake-up, reminders, timers and to-do list
+These work **without a Gemini key and without internet**. Each one is saved in a small database on the phone and handed to
+Android's AlarmManager, so it rings at the exact time with the screen off, even if Jarvis itself is not running.
+
+Say (after "Hey Jarvis"):
+- "Wake me up tomorrow at 8 AM". Jarvis repeats the time. At 8 AM you get a loud alarm, vibration, Jarvis saying
+  "Good morning! It's 8 AM. Time to wake up.", and a lock-screen screen with **Snooze** and **Dismiss**.
+- "Remind me to study at 6 PM", "remind me in 30 minutes to call mom", "wake me up at 5 AM every day",
+  "wake me up every weekday at 6 AM", "remind me every Monday at 10 AM to submit the report"
+- "Call me tomorrow morning at 7 AM". Jarvis sets an **alarm** and says plainly that it is not a real phone call.
+- "What alarms do I have", "cancel the 8 AM alarm" (it cancels one at a time, never "all"), "set a timer for 10 minutes"
+- "Add a task buy milk", "what tasks are pending", "complete task buy milk"
+
+How it behaves:
+- If you do not say AM or PM, it chooses (morning for "wake me up", the soonest future time otherwise) and tells you
+  the time it chose, so you can correct it.
+- An alarm nobody answers stops after 3 minutes, snoozes itself, and after 3 rounds is reported as missed with a
+  notification ("Sir, you missed your alarm"). Snooze length is 5 minutes; change it on the Reminders screen.
+- After a restart, alarms are put back automatically. Any whose time passed while the phone was off are reported as
+  missed (one that was due in the last 2 minutes just rings). Opening Jarvis also puts everything back.
+- Open the app and tap **Reminders and alarms** to see, cancel or add them, set the snooze length, and run
+  **Test alarm in 1 minute**.
+
+Android notes:
+- Alarms use `AlarmManager.setAlarmClock()`. It is exact, works in Doze, and does **not** need the "Alarms & reminders"
+  permission (Android 14 turns that off by default for apps installed outside the Play Store). Side effect: Android
+  shows a small alarm icon in the status bar while one is scheduled.
+- Android 14 and newer may block the full-screen alarm screen until you allow "full-screen notifications" for Jarvis.
+  The Reminders screen shows a button for it. Without it the alarm still rings and speaks, with a notification
+  that has Snooze and Dismiss.
+- **Force stop** (Settings > Apps > Jarvis > Force stop) makes Android delete all of an app's alarms. Open Jarvis once
+  to restore them.
+- On Vivo, turn **Autostart** and background power use on (see Vivo settings), or restart recovery can be blocked.
+- **Real phone-call wake-ups are not built.** They need a paid cloud phone service (for example Twilio: a phone number
+  plus a charge per call, and a small server or Cloudflare Worker holding the secret key). The local alarm is the reliable
+  part, and Jarvis never says a call was made when only an alarm rang.
 
 ---
 
@@ -28,8 +70,8 @@ It uses Google's Gemini API. Your spoken command is sent to Google as text, so i
    - "Explain why the sky is blue", "tell me a story about a clever crow"
 5. If Jarvis asks you a question, just answer. It listens again without the wake word.
 
-Tools Gemini can use: flashlight, volume, timer, battery, alarm, web search, YouTube, Maps directions, dialer,
-WhatsApp message, open a link. Actions that open another app still show a notification you tap (Android rule).
+Tools Gemini can use: flashlight, volume, timer, battery, alarms and reminders (schedule, list, cancel), to-do list,
+web search, YouTube, Maps directions, dialer, WhatsApp message, open a link. Actions that open another app still show a notification you tap (Android rule).
 Calls and WhatsApp messages are only prepared; you press call or send.
 
 With no key, or with no internet, Jarvis falls back to the old fixed offline commands.
@@ -84,6 +126,17 @@ Menu names change between Funtouch OS versions. Look for the closest match.
    - "goodbye Jarvis" (stops the service)
 4. Jarvis answers out loud and returns to waiting.
 
+## Test the alarms (do these in order)
+1. Open the app, tap **Reminders and alarms**, allow notifications, then tap **Test alarm in 1 minute**. Lock the phone and
+   wait. Expect: loud alarm, vibration, a spoken line, and the Snooze/Dismiss screen over the lock screen.
+2. Tap **Snooze**: it stops and rings again after the snooze length. Tap **Dismiss**: it stops for good.
+3. Run another test alarm and do nothing. Expect it to stop after 3 minutes and ring again after the snooze time.
+4. Say "Hey Jarvis, wake me up in 2 minutes" with the screen locked. Expect Jarvis to say the time, and the alarm to ring.
+5. Say "Hey Jarvis, wake me up tomorrow at 8 AM", then open Reminders and alarms and check the entry. Say "Hey Jarvis,
+   what alarms do I have", then "Hey Jarvis, cancel the 8 AM alarm".
+6. Restart test: schedule an alarm 10 minutes ahead, restart the phone, wait. It should ring (Autostart must be on).
+7. On a computer, `gradle :app:testDebugUnitTest` runs the 28 time-parser checks.
+
 ## Build it yourself in Android Studio instead (optional)
 1. Install Android Studio and open the `JarvisAssistant` folder. Let Gradle sync.
 2. **Speech model:** download `vosk-model-small-en-us-0.15.zip` from https://alphacephei.com/vosk/models,
@@ -95,8 +148,16 @@ Menu names change between Funtouch OS versions. Look for the closest match.
 |---|---|
 | `JarvisService.kt` | Foreground service of type microphone. Runs Vosk for the wake word, then Android's speech recognizer for one command, then text-to-speech, one at a time. Holds a partial wake lock so the CPU keeps running with the screen off. |
 | `GeminiAgent.kt` | The AI brain. Sends your words to Gemini with a list of phone tools, runs the tools Gemini picks, returns one short sentence to speak. |
-| `CommandHandler.kt` | The phone actions (torch, volume, timer, alarm, links) plus the old offline command list. Add your own tools here and in `GeminiAgent.kt`. |
+| `CommandHandler.kt` | The phone actions (torch, volume, links), the offline command list, and the offline alarm, reminder, timer and task commands. Add your own tools here and in `GeminiAgent.kt`. |
 | `MainActivity.kt` | Screen to start or stop, and open battery settings. |
+| `TimeParser.kt` | Understands "tomorrow at 8 AM", "every weekday", "in 30 minutes". Plain Kotlin, unit tested. Also repeat rules and spoken times. |
+| `Reminder.kt`, `ReminderDb.kt` | The alarm, reminder, timer and task records, saved in SQLite on the phone. |
+| `Reminders.kt` | Create, list and cancel alarms, reminders, timers and tasks. Used by voice, the AI and the screens. |
+| `AlarmScheduler.kt` | Hands alarms to AlarmManager and puts them back after a restart. |
+| `AlarmReceiver.kt`, `AlarmService.kt`, `AlarmActivity.kt` | Android wakes the receiver at the alarm time. The service plays the sound, vibrates and speaks. The activity is the lock-screen Snooze/Dismiss screen. |
+| `BootReceiver.kt` | Restores alarms after restart, app update, or a clock change. |
+| `RemindersActivity.kt` | Dashboard: list, cancel, new alarm, test alarm, snooze length, permission status. |
+| `Notifs.kt` | Notification channels and the "you missed an alarm" notification. |
 | `AndroidManifest.xml` | Permissions and the `microphone` foreground service type. |
 
 ## Honest limits
@@ -111,7 +172,14 @@ Menu names change between Funtouch OS versions. Look for the closest match.
 - **Smart only with a Gemini key and internet.** Without them it uses the fixed command list.
 - **Vivo may still stop it.** If it dies after some time, repeat the Vivo settings.
 
+## Not built yet (planned, in this order)
+Gmail and Google Calendar (these need a Google Cloud OAuth client that only you can create), reading today's schedule,
+proactive alerts for upcoming events and important emails, the futuristic Compose interface, switching between AI
+providers, encrypted token storage, and a better wake-word engine. Nothing in this list works yet.
+
 ## Troubleshooting
+- **An alarm did not ring:** check Reminders and alarms for the entry and its status. Then check Vivo Autostart,
+  background power use, and that you did not Force stop the app. Tell me what the screen showed.
 - **Notification says "Speech model missing":** the model folder was not in the build. Use the GitHub steps above,
   or follow "Speech model" in the Android Studio section.
 - **It never reacts to "Jarvis":** speak clearly and close to the phone. For Indian-accent speech you can try

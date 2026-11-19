@@ -392,15 +392,7 @@ class JarvisService : Service() {
 
     // ---------- Notifications, wake lock, cleanup ----------
 
-    private fun createChannels() {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(
-            NotificationChannel(Config.CHANNEL_SERVICE, "Jarvis running", NotificationManager.IMPORTANCE_LOW)
-        )
-        nm.createNotificationChannel(
-            NotificationChannel(Config.CHANNEL_ACTION, "Jarvis actions", NotificationManager.IMPORTANCE_HIGH)
-        )
-    }
+    private fun createChannels() = Notifs.ensureChannels(this)
 
     private fun buildNotification(text: String): Notification {
         val open = PendingIntent.getActivity(
